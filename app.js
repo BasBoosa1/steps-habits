@@ -1,4 +1,5 @@
-const KEY = 'steps-v2', AIKEY = 'steps-ai-key';
+const KEY = 'steps-v2', AIKEY = 'steps-ai-pass';
+const AI_URL = '';
 const COLORS = ['#2E9E5B', '#2F7BD9', '#E0525E', '#E8871E', '#8A5CD6', '#1F9C9C', '#C9A100', '#7A746B'];
 const TIMES = { morning: 'בוקר', day: 'במהלך היום', evening: 'ערב', any: 'כל היום' };
 const TIME_ORDER = ['morning', 'day', 'evening', 'any'];
@@ -173,9 +174,9 @@ function viewSettings() {
   <h2>ייבוא</h2><div class="group">
     <button data-act="import"><div>ייבוא חכם מפתק</div><div class="s">מדביקים פתק מבולגן, ה-AI מסדר אותו להרגלים ברורים</div></button></div>
   <h2>בינה מלאכותית</h2><div class="group"><div>
-    <input type="password" id="aikey" placeholder="${hasKey ? 'מפתח שמור ✓' : 'מפתח API של Anthropic'}" autocomplete="off">
-    <div class="btns" style="margin-top:10px"><button class="btn sm" data-act="savekey">שמור</button>${hasKey ? '<button class="btn sm soft" data-act="delkey">מחק מפתח</button>' : ''}</div></div></div>
-  <p class="note">המפתח נשמר רק במכשיר הזה. בייבוא חכם הפתק נשלח ל-Claude לעיבוד. בלי מפתח, הייבוא עובד במצב בסיסי.</p>
+    <input type="password" id="aikey" placeholder="${hasKey ? 'קוד הגישה שמור ✓' : 'קוד גישה'}" autocomplete="off">
+    <div class="btns" style="margin-top:10px"><button class="btn sm" data-act="savekey">שמור</button>${hasKey ? '<button class="btn sm soft" data-act="delkey">מחק קוד</button>' : ''}</div></div></div>
+  <p class="note">קוד הגישה פותח את הייבוא החכם במכשיר הזה. הפתק נשלח לעיבוד ב-Claude דרך השרת הפרטי שלך. בלי קוד, הייבוא עובד במצב בסיסי.</p>
   <h2>גיבוי</h2><div class="group">
     <button data-act="export"><div>שמירת גיבוי</div><div class="s">קובץ עם כל ההרגלים וההיסטוריה</div></button>
     <button data-act="restore"><div>שחזור מגיבוי</div><div class="s">מחליף את הנתונים הנוכחיים</div></button>
@@ -231,78 +232,14 @@ function readForm() {
 }
 
 // ---------- import ----------
-const SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['summary', 'habits', 'questions'],
-  properties: {
-    summary: { type: 'string' },
-    habits: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false,
-        required: ['name', 'emoji', 'note', 'frequency', 'times_per_week', 'time_of_day', 'status', 'until'],
-        properties: {
-          name: { type: 'string' }, emoji: { type: 'string' }, note: { type: 'string' },
-          frequency: { type: 'string', enum: ['daily', 'weekly'] },
-          times_per_week: { type: 'integer' },
-          time_of_day: { type: 'string', enum: TIME_ORDER },
-          status: { type: 'string', enum: ['active', 'mastered', 'later'] },
-          until: { type: 'string' }
-        }
-      }
-    },
-    questions: {
-      type: 'array', items: {
-        type: 'object', additionalProperties: false, required: ['habit_index', 'question', 'options'],
-        properties: {
-          habit_index: { type: 'integer' }, question: { type: 'string' },
-          options: {
-            type: 'array', items: {
-              type: 'object', additionalProperties: false, required: ['label', 'field', 'value'],
-              properties: {
-                label: { type: 'string' },
-                field: { type: 'string', enum: ['frequency', 'time_of_day', 'status', 'name', 'keep', 'drop'] },
-                value: { type: 'string' }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-};
-
-const SYSTEM = `You turn a person's messy personal notes about habits into a clean, trackable habit list for a habit-tracking app.
-
-Rules:
-- Write habit names in the note's language. Make each name short (2-6 words), clear and actionable, phrased as what to do or avoid. Move details, reasons and nuances into "note" (one short sentence, same language) or leave note empty.
-- One entry per real habit. Merge duplicates (the same habit listed in two sections is one habit). Split an item only when it clearly contains separate habits.
-- Skip anything that is not a habit: headings, meta-comments about the list itself, dates of reviews, self-reflection paragraphs, personality insights, general life lessons.
-- frequency: "weekly" with times_per_week when the text implies a weekly count ("3 times a week" = 3, "every 2-3 days" = 3, "once a week" = 1, a weekly day off = 1). Otherwise "daily" with times_per_week 7.
-- time_of_day from cues: waking up, morning reading = morning; bedtime, sleep, night, after a set evening hour = evening; work-hours or "during the day" = day; otherwise any.
-- status: "mastered" for habits the note says are already established or existing; "later" for wishes, someday or desired-but-not-started ones; otherwise "active". Progress percentages in the note do not change the status.
-- until: an end date written in the note ("until 3.11.26" is day.month.year) as YYYY-MM-DD, otherwise "".
-- emoji: one fitting emoji per habit.
-- questions: only where a reasonable reading is genuinely ambiguous and the answer changes how the habit is tracked. At most 5. Each with 2-3 short options in the note's language; an option sets one field: frequency value is "daily" or "weekly:N"; time_of_day and status take their enum values; name takes the new name; "keep" changes nothing; "drop" removes the habit. habit_index is the 0-based index in habits.
-- summary: one short friendly sentence in the note's language saying what you found.`;
-
 async function aiParse(text) {
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  const r = await fetch(AI_URL, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': localStorage.getItem(AIKEY),
-      'anthropic-version': '2026-10-21',
-      'anthropic-beta': 'server-side-fallback-2026-07-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: 'claude-opus-5-5', max_tokens: 16000, fallbacks: 'default',
-      output_config: { effort: 'low', format: { type: 'json_schema', schema: SCHEMA } },
-      system: SYSTEM,
-      messages: [{ role: 'user', content: `Today is ${today()}.\n\n<note>\n${text}\n</note>` }]
-    })
+    headers: { 'content-type': 'application/json', 'x-app-pass': localStorage.getItem(AIKEY) },
+    body: JSON.stringify({ note: text, today: today() })
   });
   const d = await r.json();
-  if (!r.ok) throw new Error(r.status === 401 ? 'המפתח לא תקין' : (d.error?.message || 'שגיאה ' + r.status));
+  if (!r.ok) throw new Error(r.status === 401 ? 'קוד הגישה שגוי' : (d.error?.message || 'שגיאה ' + r.status));
   if (d.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
   if (d.stop_reason === 'max_tokens') throw new Error('הפתק ארוך מדי, נסה לחלק אותו');
   const out = JSON.parse(d.content.filter(b => b.type === 'text').map(b => b.text).join(''));
@@ -338,13 +275,13 @@ function basicParse(text) {
   }
   const norm = s => s.replace(/[^\p{L}\p{N}]/gu, '');
   const seen = new Set();
-  return { summary: `נמצאו ${items.length} שורות. לסידור חכם יותר, הוסף מפתח AI בהגדרות.`, questions: [], items: items.filter(i => !seen.has(norm(i.name)) && seen.add(norm(i.name))) };
+  return { summary: `נמצאו ${items.length} שורות. לסידור חכם יותר, הוסף קוד גישה במסך "עוד".`, questions: [], items: items.filter(i => !seen.has(norm(i.name)) && seen.add(norm(i.name))) };
 }
 
 function openImport() {
-  const ai = !!localStorage.getItem(AIKEY);
+  const ai = !!(AI_URL && localStorage.getItem(AIKEY));
   openSheet(`<h3>ייבוא מפתק</h3>
-    <p class="sub">${ai ? 'הדבק את הפתק כמו שהוא, גם אם הוא מבולגן. נסדר אותו להרגלים ברורים ונשאל רק מה שלא ברור.' : 'הדבק את הפתק. במצב בסיסי (בלי מפתח AI) הסידור פשוט יותר; אפשר להוסיף מפתח במסך "עוד".'}</p>
+    <p class="sub">${ai ? 'הדבק את הפתק כמו שהוא, גם אם הוא מבולגן. נסדר אותו להרגלים ברורים ונשאל רק מה שלא ברור.' : 'הדבק את הפתק. במצב בסיסי הסידור פשוט יותר; לסידור חכם הוסף קוד גישה במסך "עוד".'}</p>
     <textarea id="itext" style="min-height:220px" placeholder="הדבק כאן..."></textarea>
     <div class="btns"><button class="btn" data-act="iparse">${ai ? 'סדר לי ✨' : 'המשך'}</button><button class="btn soft" data-act="close">ביטול</button></div>`);
 }
@@ -472,7 +409,7 @@ document.addEventListener('click', async e => {
     case 'import': openImport(); break;
     case 'iparse': {
       const text = $('#itext').value; if (!text.trim()) return;
-      if (!localStorage.getItem(AIKEY)) { imp = basicParse(text); renderImport(); break; }
+      if (!AI_URL || !localStorage.getItem(AIKEY)) { imp = basicParse(text); renderImport(); break; }
       sheet.innerHTML = `<div class="grab"></div><div class="spin"></div><p class="sub" style="text-align:center">מסדר את הפתק...<br>זה לוקח בערך חצי דקה</p>`;
       try { imp = await aiParse(text); renderImport(); }
       catch (err) { imp = basicParse(text); imp.summary = `הסידור החכם נכשל (${err.message}), אז סידרתי במצב בסיסי.`; renderImport(); }
@@ -482,9 +419,9 @@ document.addEventListener('click', async e => {
     case 'igo': doImport(); break;
     case 'savekey': {
       const v = $('#aikey').value.trim(); if (!v) return;
-      localStorage.setItem(AIKEY, v); render(); toast('המפתח נשמר במכשיר'); break;
+      localStorage.setItem(AIKEY, v); render(); toast('קוד הגישה נשמר'); break;
     }
-    case 'delkey': localStorage.removeItem(AIKEY); render(); toast('המפתח נמחק'); break;
+    case 'delkey': localStorage.removeItem(AIKEY); render(); toast('קוד הגישה נמחק'); break;
     case 'export': exportJson(); break;
     case 'restore': $('#rfile').click(); break;
     case 'astext': navigator.clipboard.writeText(asText()).then(() => toast('הועתק'), () => toast('ההעתקה נכשלה')); break;
