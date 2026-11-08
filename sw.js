@@ -1,4 +1,4 @@
-const CACHE = 'steps-1';
+const CACHE = 'steps-2';
 const FILES = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
