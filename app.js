@@ -1,5 +1,5 @@
 const KEY = 'steps-v2', AIKEY = 'steps-ai-pass';
-const AI_URL = '';
+const AI_URL = 'https://steps-ai.steps-ai.workers.dev';
 const COLORS = ['#2E9E5B', '#2F7BD9', '#E0525E', '#E8871E', '#8A5CD6', '#1F9C9C', '#C9A100', '#7A746B'];
 const TIMES = { morning: 'בוקר', day: 'במהלך היום', evening: 'ערב', any: 'כל היום' };
 const TIME_ORDER = ['morning', 'day', 'evening', 'any'];
