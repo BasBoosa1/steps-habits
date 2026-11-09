@@ -1,3 +1,8 @@
 name = "steps-ai"
 main = "worker.js"
 compatibility_date = "2025-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "steps-db"
+database_id = "6e20a123-d547-41c3-a675-01a5b8f1fde7"

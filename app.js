@@ -18,7 +18,31 @@ const main = $('#main'), veil = $('#veil'), sheet = $('#sheet');
 function load() {
   try { return JSON.parse(localStorage.getItem(KEY)) || { habits: [] }; } catch { return { habits: [] }; }
 }
-function save() { localStorage.setItem(KEY, JSON.stringify(S)); }
+function save() { S.updatedAt = Date.now(); localStorage.setItem(KEY, JSON.stringify(S)); schedulePush(); }
+
+// ---------- cloud sync ----------
+let pushTimer = null, cloud = 'off';
+const cloudOn = () => !!(AI_URL && localStorage.getItem(AIKEY));
+async function api(path, opts = {}) {
+  const r = await fetch(AI_URL + path, { ...opts, headers: { 'content-type': 'application/json', 'x-app-pass': localStorage.getItem(AIKEY) } });
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+function setCloud(s) { cloud = s; if (view === 'settings') render(); }
+function schedulePush() { if (!cloudOn()) return; clearTimeout(pushTimer); pushTimer = setTimeout(push, 1200); }
+async function push() {
+  try { await api('/data', { method: 'PUT', body: JSON.stringify({ data: S, updatedAt: S.updatedAt || Date.now() }) }); setCloud('ok'); }
+  catch (e) { setCloud(e.message === '401' ? 'auth' : 'error'); }
+}
+async function pull() {
+  if (!cloudOn()) return setCloud('off');
+  try {
+    const r = await api('/data');
+    if (r.data && r.updatedAt > (S.updatedAt || 0)) { S = r.data; localStorage.setItem(KEY, JSON.stringify(S)); render(); setCloud('ok'); }
+    else if (S.habits.length && (S.updatedAt || 0) > r.updatedAt || !r.data && S.habits.length) await push();
+    else setCloud('ok');
+  } catch (e) { setCloud(e.message === '401' ? 'auth' : 'error'); }
+}
 function iso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function today() { return iso(new Date()); }
 function D(s) { return new Date(s + 'T12:00'); }
@@ -173,10 +197,11 @@ function viewSettings() {
   return `<div class="top"><h1>עוד</h1></div>
   <h2>ייבוא</h2><div class="group">
     <button data-act="import"><div>ייבוא חכם מפתק</div><div class="s">מדביקים פתק מבולגן, ה-AI מסדר אותו להרגלים ברורים</div></button></div>
-  <h2>בינה מלאכותית</h2><div class="group"><div>
+  <h2>חשבון וענן</h2><div class="group"><div>
+    <div style="margin-bottom:10px">${{ ok: 'מסונכרן לענן ✓', off: 'לא מחובר לענן', auth: 'קוד הגישה שגוי', error: 'אין חיבור כרגע, ינסה שוב אוטומטית' }[cloud]}</div>
     <input type="password" id="aikey" placeholder="${hasKey ? 'קוד הגישה שמור ✓' : 'קוד גישה'}" autocomplete="off">
-    <div class="btns" style="margin-top:10px"><button class="btn sm" data-act="savekey">שמור</button>${hasKey ? '<button class="btn sm soft" data-act="delkey">מחק קוד</button>' : ''}</div></div></div>
-  <p class="note">קוד הגישה פותח את הייבוא החכם במכשיר הזה. הפתק נשלח לעיבוד ב-Claude דרך השרת הפרטי שלך. בלי קוד, הייבוא עובד במצב בסיסי.</p>
+    <div class="btns" style="margin-top:10px"><button class="btn sm" data-act="savekey">שמור</button>${hasKey ? '<button class="btn sm soft" data-act="delkey">התנתק</button>' : ''}</div></div></div>
+  <p class="note">קוד הגישה מחבר את המכשיר לשרת הפרטי שלך: ההרגלים נשמרים בענן ומסתנכרנים בין מכשירים, והייבוא החכם עובד דרך Claude. בלי קוד, הכל נשמר רק במכשיר.</p>
   <h2>גיבוי</h2><div class="group">
     <button data-act="export"><div>שמירת גיבוי</div><div class="s">קובץ עם כל ההרגלים וההיסטוריה</div></button>
     <button data-act="restore"><div>שחזור מגיבוי</div><div class="s">מחליף את הנתונים הנוכחיים</div></button>
@@ -233,7 +258,7 @@ function readForm() {
 
 // ---------- import ----------
 async function aiParse(text) {
-  const r = await fetch(AI_URL, {
+  const r = await fetch(AI_URL + '/import', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-app-pass': localStorage.getItem(AIKEY) },
     body: JSON.stringify({ note: text, today: today() })
@@ -419,9 +444,9 @@ document.addEventListener('click', async e => {
     case 'igo': doImport(); break;
     case 'savekey': {
       const v = $('#aikey').value.trim(); if (!v) return;
-      localStorage.setItem(AIKEY, v); render(); toast('קוד הגישה נשמר'); break;
+      localStorage.setItem(AIKEY, v); render(); toast('קוד הגישה נשמר'); pull(); break;
     }
-    case 'delkey': localStorage.removeItem(AIKEY); render(); toast('קוד הגישה נמחק'); break;
+    case 'delkey': localStorage.removeItem(AIKEY); cloud = 'off'; render(); toast('המכשיר נותק מהענן'); break;
     case 'export': exportJson(); break;
     case 'restore': $('#rfile').click(); break;
     case 'astext': navigator.clipboard.writeText(asText()).then(() => toast('הועתק'), () => toast('ההעתקה נכשלה')); break;
@@ -443,4 +468,7 @@ document.addEventListener('keydown', e => {
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pull(); });
+window.addEventListener('online', pull);
 render();
+pull();
