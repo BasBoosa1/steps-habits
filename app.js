@@ -60,7 +60,8 @@ function newHabit(f) {
   return {
     id: uid(), name: f.name, emoji: f.emoji || '🌱', color: f.color ?? S.habits.length % COLORS.length,
     freq: f.freq || { type: 'daily', times: 7 }, time: f.time || 'any', status: f.status || 'active',
-    until: f.until || null, note: f.note || '', log: {}, created: today()
+    until: f.until || null, note: f.note || '', target: f.target || null, unit: f.unit || '', remind: f.remind || null,
+    log: {}, created: today()
   };
 }
 
@@ -68,18 +69,46 @@ function freqText(f) {
   if (f.type === 'daily') return 'כל יום';
   return f.times === 1 ? 'פעם בשבוע' : `${f.times} פעמים בשבוע`;
 }
+// ---------- features (each can be switched off in "עוד") ----------
+const FEATURES = {
+  reminders: ['תזכורות', 'התראה בשעה שבחרת לכל הרגל, וסיכום ערב'],
+  quantity: ['יעד כמותי', 'למשל 8 כוסות מים או 20 עמודים, לחיצה מוסיפה 1'],
+  skip: ['דילוג על יום', 'יום מחלה או חופש לא פוגע באחוזים וברצף'],
+  streaks: ['רצפים 🔥', 'כמה ימים ברצף עמדת בהרגל']
+};
+const F = k => (S.settings?.features?.[k]) ?? (k !== 'streaks');
+function setFeature(k, on) { S.settings = S.settings || {}; S.settings.features = { ...(S.settings.features || {}), [k]: on }; save(); }
+
+// log[d]: true = done, number = amount toward a target, 's' = skipped
+const tgt = h => F('quantity') && h.target > 1 ? h.target : 1;
+const amount = (h, d) => { const v = h.log[d]; return v === true ? tgt(h) : typeof v === 'number' ? v : 0; };
+const isDone = (h, d) => amount(h, d) >= tgt(h);
+const isSkip = (h, d) => F('skip') && h.log[d] === 's';
+
 function weekCount(h, d) {
   const s = weekStart(d); let c = 0;
-  for (let i = 0; i < 7; i++) if (h.log[addDays(s, i)]) c++;
+  for (let i = 0; i < 7; i++) if (isDone(h, addDays(s, i))) c++;
   return c;
 }
 function activeOn(h, d) { return h.status === 'active' && (!h.until || d <= h.until); }
-function metForWeek(h, d) { return h.freq.type === 'weekly' && !h.log[d] && weekCount(h, d) >= h.freq.times; }
+function metForWeek(h, d) { return h.freq.type === 'weekly' && !isDone(h, d) && weekCount(h, d) >= h.freq.times; }
 
 function dayRatio(d) {
-  const items = S.habits.filter(h => activeOn(h, d) && !metForWeek(h, d));
+  const items = S.habits.filter(h => activeOn(h, d) && !metForWeek(h, d) && !isSkip(h, d));
   if (!items.length) return 0;
-  return Math.round(100 * items.filter(h => h.log[d]).length / items.length);
+  return Math.round(100 * items.filter(h => isDone(h, d)).length / items.length);
+}
+
+function streak(h) {
+  const t = today();
+  if (h.freq.type === 'weekly') {
+    let n = 0, w = weekCount(h, t) >= h.freq.times ? t : addDays(t, -7);
+    while (n < 200 && weekCount(h, w) >= h.freq.times) { n++; w = addDays(w, -7); }
+    return n >= 2 ? `🔥 ${n} שבועות` : '';
+  }
+  let n = 0, d = isDone(h, t) || isSkip(h, t) ? t : addDays(t, -1);
+  for (let i = 0; i < 1000 && (isDone(h, d) || isSkip(h, d)); i++) { if (isDone(h, d)) n++; d = addDays(d, -1); }
+  return n >= 2 ? `🔥 ${n}` : '';
 }
 
 function consistency(h) {
@@ -87,8 +116,9 @@ function consistency(h) {
   const start = h.created > addDays(end, -27) ? h.created : addDays(end, -27);
   const days = between(start, end) + 1;
   if (h.freq.type === 'daily') {
-    let c = 0; for (let i = 0; i < days; i++) if (h.log[addDays(start, i)]) c++;
-    return { pct: Math.round(100 * c / days), days };
+    let c = 0, n = 0;
+    for (let i = 0; i < days; i++) { const d = addDays(start, i); if (isSkip(h, d)) continue; n++; if (isDone(h, d)) c++; }
+    return { pct: n ? Math.round(100 * c / n) : 0, days };
   }
   const weeks = Math.max(1, Math.ceil(days / 7)); let got = 0;
   for (let w = 0; w < weeks; w++) got += Math.min(h.freq.times, weekCount(h, addDays(end, -7 * w)));
@@ -126,13 +156,19 @@ function weekStrip() {
 }
 
 function habitCard(h) {
-  const done = !!h.log[day], met = metForWeek(h, day);
-  const wk = h.freq.type === 'weekly' ? `<span class="cnt">${weekCount(h, day)}/${h.freq.times}</span>` : '';
-  const meta = h.freq.type === 'weekly' ? (met ? 'הושלם לשבוע 🎉' : freqText(h.freq)) : (h.until ? `עד ${fmt(h.until)}` : '');
-  return `<div class="card ${done ? 'done' : ''} ${met ? 'met' : ''}" data-id="${h.id}" style="--c:${COLORS[h.color]}">
+  const done = isDone(h, day), met = metForWeek(h, day), skip = isSkip(h, day), T = tgt(h), a = amount(h, day);
+  const parts = [];
+  if (skip) parts.push('דילוג היום');
+  else if (T > 1) parts.push(`${a}/${T}${h.unit ? ' ' + esc(h.unit) : ''}`);
+  if (!skip && h.freq.type === 'weekly') parts.push(met ? 'הושלם לשבוע 🎉' : `${weekCount(h, day)}/${h.freq.times} השבוע`);
+  if (h.until && !skip) parts.push(`עד ${fmt(h.until)}`);
+  if (F('streaks')) { const s = streak(h); if (s) parts.push(s); }
+  if (F('reminders') && h.remind) parts.push(`⏰ ${h.remind}`);
+  const fill = T > 1 && !done ? Math.round(100 * a / T) : 0;
+  return `<div class="card ${done ? 'done' : ''} ${met ? 'met' : ''} ${skip ? 'skip' : ''}" data-id="${h.id}" style="--c:${COLORS[h.color]};--f:${fill}%">
     <button class="emo" data-act="edit" data-id="${h.id}">${esc(h.emoji)}</button>
-    <div class="t" data-act="edit" data-id="${h.id}"><div class="n">${esc(h.name)}</div>${meta ? `<div class="meta">${meta}</div>` : ''}</div>
-    ${wk}<button class="tick" data-act="tick" data-id="${h.id}" aria-label="סמן">${CHECK}</button></div>`;
+    <div class="t" data-act="edit" data-id="${h.id}"><div class="n">${esc(h.name)}</div>${parts.length ? `<div class="meta">${parts.join(' · ')}</div>` : ''}</div>
+    <button class="tick ${T > 1 && !done ? 'plus' : ''}" data-act="tick" data-id="${h.id}" aria-label="סמן">${T > 1 && !done ? '+1' : CHECK}</button></div>`;
 }
 
 function viewToday() {
@@ -145,8 +181,8 @@ function viewToday() {
   const list = S.habits.filter(h => activeOn(h, day));
   if (!list.length) return html + `<div class="empty"><p>אין הרגלים פעילים ליום הזה.</p></div>`;
   const open = list.filter(h => !metForWeek(h, day)), met = list.filter(h => metForWeek(h, day));
-  const done = open.filter(h => h.log[day]).length;
-  html += `<div class="summary"><span>${done} מתוך ${open.length}</span><span class="bar"><i style="width:${open.length ? 100 * done / open.length : 0}%"></i></span></div>`;
+  const counted = open.filter(h => !isSkip(h, day)), done = counted.filter(h => isDone(h, day)).length;
+  html += `<div class="summary"><span>${done} מתוך ${counted.length}</span><span class="bar"><i style="width:${counted.length ? 100 * done / counted.length : 0}%"></i></span></div>`;
   for (const tm of TIME_ORDER) {
     const g = open.filter(h => h.time === tm); if (!g.length) continue;
     html += `<h2>${TIMES[tm]}</h2>` + g.map(habitCard).join('');
@@ -160,7 +196,7 @@ function dotGrid(h) {
   let cells = '';
   for (let i = 0; i < 16 * 7; i++) {
     const d = addDays(start, i);
-    cells += `<i class="${d > t ? 'fu' : h.log[d] ? 'on' : ''}"></i>`;
+    cells += `<i class="${d > t ? 'fu' : isDone(h, d) ? 'on' : isSkip(h, d) ? 'sk' : amount(h, d) ? 'pa' : ''}"></i>`;
   }
   return `<div class="grid">${cells}</div>`;
 }
@@ -175,7 +211,7 @@ function viewProgress() {
     const ready = c.pct >= 85 && c.days >= 21;
     html += `<div class="pcard" data-act="edit" data-id="${h.id}" style="--c:${COLORS[h.color]}">
       <div class="head"><div class="emo">${esc(h.emoji)}</div><div class="t"><div class="n">${esc(h.name)}</div>
-      <div class="meta">${freqText(h.freq)} · ${TIMES[h.time]}</div></div><div class="pct">${c.pct}%</div></div>
+      <div class="meta">${[freqText(h.freq), TIMES[h.time], F('streaks') && streak(h)].filter(Boolean).join(' · ')}</div></div><div class="pct">${c.pct}%</div></div>
       ${dotGrid(h)}
       ${ready ? `<div class="hint"><span>${c.pct}% ב-4 השבועות האחרונים. נראה שזה כבר הוטמע.</span>
         <button class="btn sm" data-act="master" data-id="${h.id}">הוטמע ✓</button></div>` : ''}</div>`;
@@ -202,11 +238,57 @@ function viewSettings() {
     <input type="password" id="aikey" placeholder="${hasKey ? 'קוד הגישה שמור ✓' : 'קוד גישה'}" autocomplete="off">
     <div class="btns" style="margin-top:10px"><button class="btn sm" data-act="savekey">שמור</button>${hasKey ? '<button class="btn sm soft" data-act="delkey">התנתק</button>' : ''}</div></div></div>
   <p class="note">קוד הגישה מחבר את המכשיר לשרת הפרטי שלך: ההרגלים נשמרים בענן ומסתנכרנים בין מכשירים, והייבוא החכם עובד דרך Claude. בלי קוד, הכל נשמר רק במכשיר.</p>
+  ${F('reminders') ? remindersSection() : ''}
+  <h2>הרגלים</h2><div class="group">
+    <button data-act="order"><div>סידור ההרגלים</div><div class="s">שינוי הסדר שבו ההרגלים מופיעים</div></button></div>
+  <h2>תכונות</h2><div class="group">
+    ${Object.entries(FEATURES).map(([k, [t, s]]) => `<label class="sw-row"><span><div>${t}</div><div class="s">${s}</div></span>
+      <input type="checkbox" class="switch" data-feat="${k}" ${F(k) ? 'checked' : ''}></label>`).join('')}</div>
   <h2>גיבוי</h2><div class="group">
     <button data-act="export"><div>שמירת גיבוי</div><div class="s">קובץ עם כל ההרגלים וההיסטוריה</div></button>
     <button data-act="restore"><div>שחזור מגיבוי</div><div class="s">מחליף את הנתונים הנוכחיים</div></button>
     <button data-act="astext"><div>העתקה כטקסט</div><div class="s">רשימה מסודרת להדבקה בפתקים</div></button></div>
   <input type="file" id="rfile" accept=".json,application/json" hidden>`;
+}
+
+// ---------- push reminders ----------
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+const pushState = () => !('Notification' in window) || !('PushManager' in window) ? 'unsupported' : Notification.permission;
+
+function remindersSection() {
+  const sum = S.settings?.summary || {};
+  const st = pushState(), on = st === 'granted' && localStorage.getItem('steps-push') === '1';
+  let status;
+  if (!cloudOn()) status = 'כדי לקבל התראות צריך להתחבר לענן (קוד גישה למעלה).';
+  else if (!standalone() && /iPhone|iPad/.test(navigator.userAgent)) status = 'באייפון ההתראות עובדות רק מהאפליקציה שבמסך הבית.';
+  else if (st === 'unsupported') status = 'הדפדפן הזה לא תומך בהתראות.';
+  else if (st === 'denied') status = 'ההתראות חסומות. אפשר להפעיל ב: הגדרות ← צעדים ← עדכונים.';
+  return `<h2>תזכורות</h2><div class="group">
+    ${status ? `<div class="s" style="font-size:14px">${status}</div>` : on
+      ? `<div>ההתראות פעילות במכשיר הזה ✓<div class="btns" style="margin-top:10px"><button class="btn sm soft" data-act="testpush">שלח בדיקה</button><button class="btn sm soft" data-act="pushoff">כבה במכשיר הזה</button></div></div>`
+      : `<button data-act="pushon"><div style="color:var(--accent);font-weight:600">הפעלת התראות במכשיר הזה</div><div class="s">שעת תזכורת לכל הרגל בוחרים במסך העריכה שלו</div></button>`}
+    <label class="sw-row"><span><div>סיכום ערב</div><div class="s">התראה אחת עם מה שנשאר פתוח היום</div></span>
+      <input type="checkbox" class="switch" data-sum="on" ${sum.on ? 'checked' : ''}></label>
+    ${sum.on ? `<div class="sw-row"><span>שעה</span><input type="time" id="sumtime" value="${sum.time || '21:00'}"></div>` : ''}</div>`;
+}
+
+async function pushOn() {
+  try {
+    if (await Notification.requestPermission() !== 'granted') { render(); return; }
+    const { key } = await api('/push-key');
+    if (!key) return toast('השרת עוד לא הוגדר להתראות');
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    await api('/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
+    localStorage.setItem('steps-push', '1'); render(); toast('ההתראות הופעלו ✓');
+  } catch { toast('לא הצלחתי להפעיל התראות'); }
+}
+async function pushOff() {
+  try {
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub) { await api('/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) }); await sub.unsubscribe(); }
+  } catch {}
+  localStorage.removeItem('steps-push'); render(); toast('ההתראות כובו במכשיר הזה');
 }
 
 // ---------- sheets ----------
@@ -221,17 +303,28 @@ const freqKey = f => f.type === 'daily' ? 'd' : String(f.times);
 
 function habitForm(isNew) {
   const d = draft;
-  let html = `<h3>${isNew ? 'הרגל חדש' : 'עריכה'}</h3>
+  let html = `<h3>${isNew ? 'הרגל חדש' : 'עריכה'}</h3>`;
+  if (!isNew && view === 'today' && F('skip') && activeOn(d, day)) {
+    const sk = d.log[day] === 's';
+    html += `<button class="btn soft full" style="margin-top:12px" data-act="skip">${sk ? `ביטול הדילוג (${dayLabel(day)})` : `דילוג על ${dayLabel(day)} ⏭`}</button>`;
+  }
+  html += `
     <div class="namerow" style="margin-top:12px"><input type="text" class="emoji-in" id="femoji" value="${esc(d.emoji)}" maxlength="4">
     <input type="text" id="fname" value="${esc(d.name)}" placeholder="למשל: לא לעשות כמה דברים במקביל" enterkeyhint="done" autocomplete="off"></div>
     <label>כמה פעמים</label>${chipRow('freq', FREQS, freqKey(d.freq))}
     <label>מתי</label>${chipRow('time', TIME_ORDER.map(t => [t, TIMES[t]]), d.time)}`;
+  let extra = '';
+  if (F('quantity')) extra += `<label>יעד ליום (לא חובה)</label><div class="namerow">
+      <input type="number" id="ftarget" inputmode="numeric" min="1" max="999" value="${d.target > 1 ? d.target : ''}" placeholder="למשל 8" style="width:110px;flex:none">
+      <input type="text" id="funit" value="${esc(d.unit || '')}" placeholder="יחידה: כוסות, עמודים, דקות"></div>`;
+  if (F('reminders')) extra += `<label>תזכורת (לא חובה)</label><div class="namerow"><input type="time" id="fremind" value="${d.remind || ''}">
+      ${d.remind ? '<button class="btn sm soft" data-act="clearremind">בלי תזכורת</button>' : ''}</div>`;
   if (!isNew) {
-    html += `<label>מצב</label>${chipRow('status', Object.entries(STATUS), d.status)}
+    html += extra + `<label>מצב</label>${chipRow('status', Object.entries(STATUS), d.status)}
       <label>צבע</label><div class="swatches">${COLORS.map((c, i) => `<button class="sw ${i === d.color ? 'on' : ''}" style="background:${c}" data-act="chip" data-g="color" data-v="${i}"></button>`).join('')}</div>
       <label>עד תאריך (לא חובה)</label><input type="date" id="funtil" value="${d.until || ''}">
       <label>הערה</label><textarea id="fnote" placeholder="למה זה חשוב לי, איך עושים את זה...">${esc(d.note)}</textarea>`;
-  }
+  } else if (extra) html += `<details class="more"><summary>אפשרויות נוספות</summary>${extra}</details>`;
   html += `<div class="btns"><button class="btn" data-act="${isNew ? 'add' : 'save'}">${isNew ? 'הוסף' : 'שמור'}</button><button class="btn soft" data-act="close">ביטול</button></div>`;
   if (isNew) html += `<button class="btn link full" data-act="import">יש לך רשימה או פתק? ייבוא חכם</button>`;
   else html += `<button class="btn danger full" data-act="del">מחיקת ההרגל</button>`;
@@ -241,7 +334,23 @@ function habitForm(isNew) {
 function openQuick() {
   draft = { emoji: '🌱', name: '', freq: { type: 'daily', times: 7 }, time: 'any', color: S.habits.length % COLORS.length };
   openSheet(habitForm(true));
-  $('#fname').focus();
+}
+const dayLabel = d => d === today() ? 'היום' : d === addDays(today(), -1) ? 'אתמול' : `יום ${DAYS[dow(d)]}`;
+
+function openOrder() {
+  const list = S.habits.filter(h => h.status !== 'later');
+  openSheet(`<h3>סידור ההרגלים</h3><p class="sub">החיצים מזיזים הרגל למעלה או למטה.</p>
+    ${list.map((h, i) => `<div class="ii" style="--c:${COLORS[h.color]}"><div class="emo">${esc(h.emoji)}</div><div class="t"><div class="n">${esc(h.name)}</div></div>
+      <button class="btn sm soft" data-act="mv" data-id="${h.id}" data-n="-1" ${i ? '' : 'disabled'} aria-label="למעלה">↑</button>
+      <button class="btn sm soft" data-act="mv" data-id="${h.id}" data-n="1" ${i < list.length - 1 ? '' : 'disabled'} aria-label="למטה">↓</button></div>`).join('')}
+    <div class="btns"><button class="btn" data-act="close">סיום</button></div>`);
+}
+function move(id, n) {
+  const list = S.habits.filter(h => h.status !== 'later'), i = list.findIndex(h => h.id === id), other = list[i + n];
+  if (!other) return;
+  const a = S.habits.indexOf(list[i]), b = S.habits.indexOf(other);
+  [S.habits[a], S.habits[b]] = [S.habits[b], S.habits[a]];
+  save(); const top = sheet.scrollTop; openOrder(); sheet.scrollTop = top;
 }
 function openEdit(id) {
   const h = byId(id); if (!h) return;
@@ -253,6 +362,8 @@ function readForm() {
   draft.emoji = $('#femoji').value.trim() || '🌱';
   if ($('#funtil')) draft.until = $('#funtil').value || null;
   if ($('#fnote')) draft.note = $('#fnote').value;
+  if ($('#ftarget')) { const t = parseInt($('#ftarget').value, 10); draft.target = t > 1 ? Math.min(t, 999) : null; draft.unit = $('#funit').value.trim(); }
+  if ($('#fremind')) draft.remind = $('#fremind').value || null;
   return draft.name;
 }
 
@@ -405,10 +516,26 @@ document.addEventListener('click', async e => {
       day = day > anchor || day < addDays(anchor, -6) ? anchor : day; render(); break;
     }
     case 'tick': {
-      const h = byId(id);
-      if (h.log[day]) delete h.log[day]; else { h.log[day] = true; popId = id; }
+      const h = byId(id), T = tgt(h);
+      if (T > 1) {
+        const next = isDone(h, day) ? 0 : amount(h, day) + 1;
+        if (next) h.log[day] = next; else delete h.log[day];
+        if (next >= T) popId = id;
+      } else if (isDone(h, day)) delete h.log[day];
+      else { h.log[day] = true; popId = id; }
       save(); render(); break;
     }
+    case 'skip': {
+      const h = byId(draft.id);
+      if (h.log[day] === 's') delete h.log[day]; else h.log[day] = 's';
+      save(); closeSheet(); render(); toast(h.log[day] === 's' ? 'דילגת, הרצף והאחוזים לא נפגעים' : 'הדילוג בוטל'); break;
+    }
+    case 'clearremind': $('#fremind').value = ''; el.remove(); break;
+    case 'order': openOrder(); break;
+    case 'mv': move(id, +el.dataset.n); break;
+    case 'pushon': pushOn(); break;
+    case 'pushoff': pushOff(); break;
+    case 'testpush': api('/test-push', { method: 'POST' }).then(r => toast(r.sent ? 'נשלחה התראת בדיקה' : 'לא נמצא מכשיר רשום'), () => toast('השליחה נכשלה')); break;
     case 'edit': openEdit(id); break;
     case 'chip': {
       const g = el.dataset.g, v = el.dataset.v;
@@ -419,10 +546,8 @@ document.addEventListener('click', async e => {
       break;
     }
     case 'add':
-      if (!readForm()) { $('#fname').focus(); return; }
-      S.habits.push(newHabit(draft)); save(); render();
-      draft = { ...draft, name: '', emoji: '🌱', color: S.habits.length % COLORS.length };
-      $('#fname').value = ''; $('#femoji').value = '🌱'; $('#fname').focus(); toast('נוסף ✓');
+      if (!readForm()) { toast('צריך לתת להרגל שם'); return; }
+      S.habits.push(newHabit(draft)); save(); closeSheet(); render(); toast('נוסף ✓');
       break;
     case 'save': {
       if (!readForm()) return;
@@ -461,10 +586,30 @@ document.addEventListener('change', e => {
   const t = e.target;
   if (t.id === 'rfile' && t.files[0]) restoreJson(t.files[0]);
   if (t.dataset.inc != null && imp) { imp.items[t.dataset.inc].include = t.checked; renderImport(); }
+  if (t.dataset.feat) { setFeature(t.dataset.feat, t.checked); render(); }
+  if (t.dataset.sum) { S.settings = S.settings || {}; S.settings.summary = { time: '21:00', ...(S.settings.summary || {}), on: t.checked }; save(); render(); }
+  if (t.id === 'sumtime' && t.value) { S.settings.summary.time = t.value; save(); toast('נשמר'); }
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && e.target.id === 'fname') { e.preventDefault(); sheet.querySelector('[data-act=add],[data-act=save]').click(); }
+  if (e.key === 'Enter' && e.target.id === 'fname') { e.preventDefault(); e.target.blur(); }
 });
+
+// Swipe the sheet down to close it, like native iOS sheets.
+(() => {
+  let y0 = null, dy = 0;
+  sheet.addEventListener('touchstart', e => { if (sheet.scrollTop <= 0 && !e.target.closest('input,textarea')) { y0 = e.touches[0].clientY; dy = 0; } }, { passive: true });
+  sheet.addEventListener('touchmove', e => {
+    if (y0 == null) return;
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    if (dy > 0) { sheet.style.transition = 'none'; sheet.style.transform = `translateY(${dy}px)`; }
+  }, { passive: true });
+  sheet.addEventListener('touchend', () => {
+    if (y0 == null) return;
+    sheet.style.transition = ''; sheet.style.transform = '';
+    if (dy > 110) closeSheet();
+    y0 = null;
+  });
+})();
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');

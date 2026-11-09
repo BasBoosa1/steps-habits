@@ -1,4 +1,7 @@
+import { buildPushHTTPRequest } from '@pushforge/builder';
+
 const ORIGIN = 'https://basboosa1.github.io';
+const APP_URL = 'https://basboosa1.github.io/steps-habits/';
 
 const SCHEMA = {
   type: 'object', additionalProperties: false, required: ['summary', 'habits', 'questions'],
@@ -117,6 +120,98 @@ export default {
       return reply({ ok: true });
     }
     if (req.method === 'POST' && (path === '/' || path === '/import')) return importNote(req, env, reply);
+
+    if (path === '/push-key' && req.method === 'GET') return reply({ key: env.VAPID_PUBLIC || null });
+    if (path === '/subscribe' && req.method === 'POST') {
+      const { subscription: s, tz } = await req.json();
+      if (!s?.endpoint || !s.keys?.p256dh || !s.keys?.auth) return reply({ error: { message: 'bad subscription' } }, 400);
+      await env.DB.prepare(
+        `INSERT INTO subs (endpoint, user_id, p256dh, auth, tz) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(endpoint) DO UPDATE SET user_id = ?2, p256dh = ?3, auth = ?4, tz = ?5`
+      ).bind(s.endpoint, user, s.keys.p256dh, s.keys.auth, tz || 'Asia/Jerusalem').run();
+      return reply({ ok: true });
+    }
+    if (path === '/unsubscribe' && req.method === 'POST') {
+      const { endpoint } = await req.json();
+      await env.DB.prepare('DELETE FROM subs WHERE endpoint = ? AND user_id = ?').bind(endpoint, user).run();
+      return reply({ ok: true });
+    }
+    if (path === '/test-push' && req.method === 'POST') {
+      const n = await notifyUser(env, user, { title: 'צעדים', body: 'ההתראות עובדות ✓' });
+      return reply({ sent: n });
+    }
     return reply({ error: { message: 'not found' } }, 404);
+  },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(sendDueReminders(env));
   }
 };
+
+// ---------- reminders ----------
+async function notifyUser(env, user, payload) {
+  const { results } = await env.DB.prepare('SELECT endpoint, p256dh, auth FROM subs WHERE user_id = ?').bind(user).all();
+  let sent = 0;
+  for (const s of results) {
+    const { endpoint, headers, body } = await buildPushHTTPRequest({
+      privateJWK: JSON.parse(env.VAPID_PRIVATE),
+      subscription: { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
+      message: { payload: { ...payload, url: APP_URL }, adminContact: APP_URL, options: { ttl: 3600, urgency: 'high' } }
+    });
+    const r = await fetch(endpoint, { method: 'POST', headers, body });
+    if (r.status === 404 || r.status === 410) await env.DB.prepare('DELETE FROM subs WHERE endpoint = ?').bind(s.endpoint).run();
+    else if (r.ok) sent++;
+  }
+  return sent;
+}
+
+function localNow(tz) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date()).map(x => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, min: +p.hour * 60 + +p.minute };
+}
+const addDays = (s, n) => { const d = new Date(s + 'T12:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const toMin = t => { const [h, m] = String(t).split(':').map(Number); return h * 60 + m; };
+
+function habitState(h, d, F) {
+  const tgt = F.quantity !== false && h.target > 1 ? h.target : 1;
+  const done = day => { const v = h.log?.[day]; return v === true || (typeof v === 'number' && v >= tgt); };
+  if (h.status !== 'active' || (h.until && d > h.until) || h.log?.[d] === 's' || done(d)) return 'closed';
+  if (h.freq?.type === 'weekly') {
+    const start = addDays(d, -new Date(d + 'T12:00Z').getUTCDay());
+    let c = 0; for (let i = 0; i < 7; i++) if (done(addDays(start, i))) c++;
+    if (c >= h.freq.times) return 'closed';
+  }
+  return 'open';
+}
+
+async function sendDueReminders(env) {
+  const { results } = await env.DB.prepare(
+    'SELECT s.user_id, MIN(s.tz) AS tz, d.data FROM subs s JOIN docs d ON d.user_id = s.user_id GROUP BY s.user_id'
+  ).all();
+  for (const row of results) {
+    const data = JSON.parse(row.data);
+    const F = data.settings?.features || {};
+    if (F.reminders === false) continue;
+    const now = localNow(row.tz);
+    const due = t => { const m = toMin(t); return m <= now.min && m > now.min - 5; };
+    const open = (data.habits || []).filter(h => habitState(h, now.date, F) === 'open');
+    const once = async k => (await env.DB.prepare('INSERT OR IGNORE INTO sent (user_id, day, k) VALUES (?, ?, ?)').bind(row.user_id, now.date, k).run()).meta.changes > 0;
+
+    const timed = open.filter(h => h.remind && due(h.remind));
+    if (timed.length && await once('r' + now.min)) {
+      await notifyUser(env, row.user_id, {
+        title: timed.length === 1 ? `${timed[0].emoji} ${timed[0].name}` : 'הגיע הזמן',
+        body: timed.length === 1 ? 'הגיע הזמן להרגל הזה' : timed.map(h => `${h.emoji} ${h.name}`).join(' · ')
+      });
+    }
+    const sum = data.settings?.summary;
+    if (sum?.on && sum.time && due(sum.time) && open.length && await once('summary')) {
+      await notifyUser(env, row.user_id, {
+        title: `נשארו ${open.length} הרגלים להיום`,
+        body: open.slice(0, 4).map(h => `${h.emoji} ${h.name}`).join(' · ') + (open.length > 4 ? ' ועוד' : '')
+      });
+    }
+  }
+  await env.DB.prepare('DELETE FROM sent WHERE day < ?').bind(addDays(new Date().toISOString().slice(0, 10), -3)).run();
+}
