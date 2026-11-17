@@ -194,9 +194,11 @@ async function sendDueReminders(env) {
     const F = data.settings?.features || {};
     if (F.reminders === false) continue;
     const now = localNow(row.tz);
+    const date = now.min < (data.settings?.dayStart || 0) * 60 ? addDays(now.date, -1) : now.date;
+    if (F.skip !== false && data.off?.[date]) continue;
     const due = t => { const m = toMin(t); return m <= now.min && m > now.min - 5; };
-    const open = (data.habits || []).filter(h => habitState(h, now.date, F) === 'open');
-    const once = async k => (await env.DB.prepare('INSERT OR IGNORE INTO sent (user_id, day, k) VALUES (?, ?, ?)').bind(row.user_id, now.date, k).run()).meta.changes > 0;
+    const open = (data.habits || []).filter(h => habitState(h, date, F) === 'open');
+    const once = async k => (await env.DB.prepare('INSERT OR IGNORE INTO sent (user_id, day, k) VALUES (?, ?, ?)').bind(row.user_id, date, k).run()).meta.changes > 0;
 
     const timed = open.filter(h => h.remind && due(h.remind));
     if (timed.length && await once('r' + now.min)) {

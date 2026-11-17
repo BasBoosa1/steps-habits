@@ -2,7 +2,7 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>צעדים</title>
 <meta name="theme-color" content="#f5f4f1" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f1110" media="(prefers-color-scheme: dark)">
@@ -23,7 +23,9 @@
     --glass:rgba(30,33,31,.72);--scrim:rgba(0,0,0,.5);--shadow:none;}
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;background:var(--bg);color:var(--ink)}
+html,body{margin:0;background:var(--bg);color:var(--ink);touch-action:pan-x pan-y;-webkit-text-size-adjust:100%}
+body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+input,textarea{-webkit-user-select:text;user-select:text}
 body{font:17px/1.4 -apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",Arial,sans-serif;
   -webkit-font-smoothing:antialiased;padding:env(safe-area-inset-top) 0 calc(110px + env(safe-area-inset-bottom));min-height:100vh}
 button{font:inherit;color:inherit;cursor:pointer}
@@ -36,15 +38,20 @@ h1{font-size:34px;line-height:1.1;letter-spacing:-.02em;margin:2px 0 0;font-weig
 h2{font-size:13px;font-weight:600;color:var(--muted);margin:22px 4px 8px;letter-spacing:.02em}
 
 /* week strip */
-.week{display:flex;align-items:center;gap:2px;margin:12px 0 4px}
+.acts{display:flex;gap:18px}
+.back.muted{color:var(--muted)}
+.offbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0 0;padding:12px 14px;border-radius:16px;
+  background:var(--card);box-shadow:var(--shadow);font-size:15px}
+.week{display:flex;align-items:center;gap:2px;margin:12px 0 4px;touch-action:pan-y}
 .week .nav{background:none;border:0;color:var(--muted);font-size:22px;padding:8px 4px;line-height:1}
 .week .nav:disabled{opacity:.25}
 .days{flex:1;display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
 .d{background:none;border:0;padding:4px 0;display:flex;flex-direction:column;align-items:center;gap:5px}
 .d .l{font-size:12px;color:var(--muted);font-weight:600}
-.d .r{--p:0;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
+.r{--p:0;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;
   background:conic-gradient(var(--accent) calc(var(--p)*1%),var(--fill) 0);transition:transform .1s}
-.d .r span{width:32px;height:32px;border-radius:50%;background:var(--bg);display:grid;place-items:center;font-size:15px;font-weight:600}
+.r span{width:32px;height:32px;border-radius:50%;background:var(--bg);display:grid;place-items:center;font-size:15px;font-weight:600}
+.off .r{background:none;outline:2px dashed var(--line);outline-offset:-3px}
 .d.sel .r span{background:var(--ink);color:var(--bg)}
 .d.today .l{color:var(--accent)}
 .d:disabled{opacity:.3}
@@ -73,7 +80,7 @@ h2{font-size:13px;font-weight:600;color:var(--muted);margin:22px 4px 8px;letter-
 .done .tick svg{opacity:1}
 .pop .tick{animation:pop .2s cubic-bezier(.23,1,.32,1)}
 @keyframes pop{from{transform:scale(.85)}to{transform:scale(1)}}
-.card{position:relative;overflow:hidden}
+.card{position:relative;overflow:hidden;touch-action:pan-y}
 .card::before{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:var(--f,0%);background:color-mix(in srgb,var(--c) 16%,transparent);transition:width .25s cubic-bezier(.23,1,.32,1);pointer-events:none}
 .card>*{position:relative}
 .tick.plus{font-size:14px;font-weight:800;color:var(--c)}
@@ -94,6 +101,38 @@ h2{font-size:13px;font-weight:600;color:var(--muted);margin:22px 4px 8px;letter-
 .grid i.sk{background:transparent;box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--c) 35%,transparent)}
 .hint{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding:10px 12px;border-radius:12px;
   background:color-mix(in srgb,var(--c) 12%,var(--card));font-size:14px}
+.panel{--c:var(--accent);background:var(--card);border-radius:20px;padding:14px;margin:14px 0 10px;box-shadow:var(--shadow)}
+.mh{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:17px}
+.mh .nav{background:none;border:0;color:var(--muted);font-size:24px;padding:4px 12px;line-height:1}
+.mh .nav:disabled{opacity:.25}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px 0;justify-items:center;touch-action:pan-y}
+.cal .h{font-size:12px;font-weight:600;color:var(--muted)}
+.cd{background:none;border:0;padding:0}
+.cd:disabled{opacity:.35}
+.cd.today .r span{color:var(--accent)}
+.cd:active .r{transform:scale(.92)}
+.hc{width:38px;height:38px;border:0;border-radius:50%;background:none;font-size:15px;font-weight:600;color:var(--ink);display:grid;place-items:center;padding:0;transition:background .2s,transform .1s}
+.hc:active{transform:scale(.9)}
+.hc.on{background:var(--c);color:#fff}
+.hc.pa{background:color-mix(in srgb,var(--c) 35%,transparent)}
+.hc.sk{border:1.5px dashed color-mix(in srgb,var(--c) 60%,transparent)}
+.hc.fu{opacity:.3}
+.hc.today:not(.on){box-shadow:inset 0 0 0 2px var(--ink)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--card);border-radius:16px;padding:12px 14px;box-shadow:var(--shadow)}
+.stat b{display:block;font-size:26px;font-weight:800;letter-spacing:-.02em;color:var(--c,var(--ink))}
+.stat span{font-size:13px;color:var(--muted)}
+.wd{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;height:130px}
+.wd>div{display:grid;grid-template-rows:1fr auto;justify-items:center;gap:6px}
+.wd .b{height:100%;width:100%;max-width:30px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px}
+.wd small{font-size:11px;color:var(--muted);font-weight:600}
+.wd i{display:block;width:100%;border-radius:7px;background:var(--c)}
+.wd span{font-size:12px;font-weight:600;color:var(--muted)}
+.sh{display:flex;align-items:center;gap:12px}
+.sh h3{margin:0}
+.confetti{position:fixed;inset:0;pointer-events:none;z-index:30;overflow:hidden}
+.confetti i{position:absolute;top:-14px;left:var(--x);width:8px;height:13px;border-radius:2px;animation:fall var(--d) cubic-bezier(.2,.6,.4,1) forwards}
+@keyframes fall{to{transform:translateY(105vh) rotate(var(--r))}}
 .row{display:flex;align-items:center;gap:12px;background:var(--card);border-radius:16px;padding:10px 12px;margin-bottom:6px;width:100%;
   border:0;text-align:right;box-shadow:var(--shadow)}
 .row .t{flex:1;min-width:0}

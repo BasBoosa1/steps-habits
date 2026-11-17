@@ -11,6 +11,7 @@ const CHECK = '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
 
 let S = load();
 let view = 'today', day = today(), anchor = day, draft = null, imp = null, popId = null;
+let month = day.slice(0, 7), hMonth = month, statsId = null, noClick = 0;
 
 const $ = s => document.querySelector(s);
 const main = $('#main'), veil = $('#veil'), sheet = $('#sheet');
@@ -44,7 +45,15 @@ async function pull() {
   } catch (e) { setCloud(e.message === '401' ? 'auth' : 'error'); }
 }
 function iso(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-function today() { return iso(new Date()); }
+function dayStart() { return S.settings?.dayStart || 0; }
+function today() { return iso(new Date(Date.now() - dayStart() * 36e5)); }
+const addMonths = (ym, n) => iso(new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1 + n, 1)).slice(0, 7);
+const monthName = ym => `${MONTHS[+ym.slice(5, 7) - 1]} ${ym.slice(0, 4)}`;
+function monthCells(ym) {
+  const last = iso(new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0)), end = addDays(weekStart(last), 6), out = [];
+  for (let d = weekStart(ym + '-01'); d <= end; d = addDays(d, 1)) out.push(d);
+  return out;
+}
 function D(s) { return new Date(s + 'T12:00'); }
 function addDays(s, n) { const d = D(s); d.setDate(d.getDate() + n); return iso(d); }
 function dow(s) { return D(s).getDay(); }
@@ -73,17 +82,20 @@ function freqText(f) {
 const FEATURES = {
   reminders: ['תזכורות', 'התראה בשעה שבחרת לכל הרגל, וסיכום ערב'],
   quantity: ['יעד כמותי', 'למשל 8 כוסות מים או 20 עמודים, לחיצה מוסיפה 1'],
-  skip: ['דילוג על יום', 'יום מחלה או חופש לא פוגע באחוזים וברצף'],
-  streaks: ['רצפים 🔥', 'כמה ימים ברצף עמדת בהרגל']
+  skip: ['דילוג', 'על הרגל אחד (החלקה הצידה) או על יום שלם. מחלה או חופשה לא פוגעים באחוזים וברצף'],
+  streaks: ['רצפים 🔥', 'כמה ימים ברצף עמדת בהרגל'],
+  sink: ['מה שבוצע יורד למטה', 'ההרגלים שנשארו לעשות תמיד בראש הרשימה'],
+  celebrate: ['חגיגה בסיום', 'קונפטי כשכל ההרגלים של היום הושלמו']
 };
-const F = k => (S.settings?.features?.[k]) ?? (k !== 'streaks');
+const F = k => (S.settings?.features?.[k]) ?? (k !== 'streaks' && k !== 'sink');
 function setFeature(k, on) { S.settings = S.settings || {}; S.settings.features = { ...(S.settings.features || {}), [k]: on }; save(); }
 
 // log[d]: true = done, number = amount toward a target, 's' = skipped
 const tgt = h => F('quantity') && h.target > 1 ? h.target : 1;
 const amount = (h, d) => { const v = h.log[d]; return v === true ? tgt(h) : typeof v === 'number' ? v : 0; };
 const isDone = (h, d) => amount(h, d) >= tgt(h);
-const isSkip = (h, d) => F('skip') && h.log[d] === 's';
+const isOff = d => F('skip') && !!S.off?.[d];
+const isSkip = (h, d) => F('skip') && (h.log[d] === 's' || !!S.off?.[d]);
 
 function weekCount(h, d) {
   const s = weekStart(d); let c = 0;
@@ -93,22 +105,49 @@ function weekCount(h, d) {
 function activeOn(h, d) { return h.status === 'active' && (!h.until || d <= h.until); }
 function metForWeek(h, d) { return h.freq.type === 'weekly' && !isDone(h, d) && weekCount(h, d) >= h.freq.times; }
 
-function dayRatio(d) {
-  const items = S.habits.filter(h => activeOn(h, d) && !metForWeek(h, d) && !isSkip(h, d));
-  if (!items.length) return 0;
-  return Math.round(100 * items.filter(h => isDone(h, d)).length / items.length);
+function dayStats(d) {
+  const items = S.habits.filter(h => activeOn(h, d) && d >= h.created && !metForWeek(h, d) && !isSkip(h, d));
+  return { n: items.length, c: items.filter(h => isDone(h, d)).length };
+}
+function dayRatio(d) { const s = dayStats(d); return s.n ? Math.round(100 * s.c / s.n) : 0; }
+
+function perfectStreak() {
+  let n = 0, d = today();
+  const s0 = dayStats(d); if (!(s0.n && s0.c === s0.n)) d = addDays(d, -1);
+  for (let i = 0; i < 1000; i++, d = addDays(d, -1)) {
+    if (isOff(d)) continue;
+    const s = dayStats(d); if (!s.n || s.c < s.n) break; n++;
+  }
+  return n;
 }
 
-function streak(h) {
+function streakCount(h) {
   const t = today();
   if (h.freq.type === 'weekly') {
     let n = 0, w = weekCount(h, t) >= h.freq.times ? t : addDays(t, -7);
     while (n < 200 && weekCount(h, w) >= h.freq.times) { n++; w = addDays(w, -7); }
-    return n >= 2 ? `🔥 ${n} שבועות` : '';
+    return n;
   }
   let n = 0, d = isDone(h, t) || isSkip(h, t) ? t : addDays(t, -1);
   for (let i = 0; i < 1000 && (isDone(h, d) || isSkip(h, d)); i++) { if (isDone(h, d)) n++; d = addDays(d, -1); }
-  return n >= 2 ? `🔥 ${n}` : '';
+  return n;
+}
+function streak(h) { const n = streakCount(h); return n < 2 ? '' : h.freq.type === 'weekly' ? `🔥 ${n} שבועות` : `🔥 ${n}`; }
+
+function habitStats(h) {
+  const t = today(), first = Object.keys(h.log).sort()[0], start = first && first < h.created ? first : h.created;
+  let total = 0, best = 0, run = 0;
+  for (const k in h.log) if (k <= t && isDone(h, k)) total++;
+  if (h.freq.type === 'weekly') {
+    for (let w = weekStart(start); w <= t; w = addDays(w, 7)) {
+      if (weekCount(h, w) >= h.freq.times) best = Math.max(best, ++run); else if (w !== weekStart(t)) run = 0;
+    }
+  } else {
+    for (let d = start; d <= t; d = addDays(d, 1)) {
+      if (isDone(h, d)) best = Math.max(best, ++run); else if (!isSkip(h, d) && d !== t) run = 0;
+    }
+  }
+  return { total, best };
 }
 
 function consistency(h) {
@@ -146,10 +185,10 @@ function emptyState() {
 
 function weekStrip() {
   const t = today();
-  let html = `<div class="week"><button class="nav" data-act="wk" data-n="-7" aria-label="שבוע קודם">›</button><div class="days">`;
+  let html = `<div class="week" data-swipe="wk"><button class="nav" data-act="wk" data-n="-7" aria-label="שבוע קודם">›</button><div class="days">`;
   for (let i = 6; i >= 0; i--) {
     const d = addDays(anchor, -i);
-    html += `<button class="d ${d === day ? 'sel' : ''} ${d === t ? 'today' : ''}" data-act="day" data-d="${d}">
+    html += `<button class="d ${d === day ? 'sel' : ''} ${d === t ? 'today' : ''} ${isOff(d) ? 'off' : ''}" data-act="day" data-d="${d}">
       <span class="l">${LETTERS[dow(d)]}</span><span class="r" style="--p:${dayRatio(d)}"><span>${D(d).getDate()}</span></span></button>`;
   }
   return html + `</div><button class="nav" data-act="wk" data-n="7" aria-label="שבוע הבא" ${anchor >= t ? 'disabled' : ''}>‹</button></div>`;
@@ -158,14 +197,14 @@ function weekStrip() {
 function habitCard(h) {
   const done = isDone(h, day), met = metForWeek(h, day), skip = isSkip(h, day), T = tgt(h), a = amount(h, day);
   const parts = [];
-  if (skip) parts.push('דילוג היום');
+  if (skip) parts.push(isOff(day) ? 'יום חופש' : 'דילוג');
   else if (T > 1) parts.push(`${a}/${T}${h.unit ? ' ' + esc(h.unit) : ''}`);
   if (!skip && h.freq.type === 'weekly') parts.push(met ? 'הושלם לשבוע 🎉' : `${weekCount(h, day)}/${h.freq.times} השבוע`);
   if (h.until && !skip) parts.push(`עד ${fmt(h.until)}`);
   if (F('streaks')) { const s = streak(h); if (s) parts.push(s); }
   if (F('reminders') && h.remind) parts.push(`⏰ ${h.remind}`);
   const fill = T > 1 && !done ? Math.round(100 * a / T) : 0;
-  return `<div class="card ${done ? 'done' : ''} ${met ? 'met' : ''} ${skip ? 'skip' : ''}" data-id="${h.id}" style="--c:${COLORS[h.color]};--f:${fill}%">
+  return `<div class="card ${done ? 'done' : ''} ${met ? 'met' : ''} ${skip ? 'skip' : ''}" data-id="${h.id}" ${F('skip') && !isOff(day) ? 'data-swipe="card"' : ''} style="--c:${COLORS[h.color]};--f:${fill}%">
     <button class="emo" data-act="edit" data-id="${h.id}">${esc(h.emoji)}</button>
     <div class="t" data-act="edit" data-id="${h.id}"><div class="n">${esc(h.name)}</div>${parts.length ? `<div class="meta">${parts.join(' · ')}</div>` : ''}</div>
     <button class="tick ${T > 1 && !done ? 'plus' : ''}" data-act="tick" data-id="${h.id}" aria-label="סמן">${T > 1 && !done ? '+1' : CHECK}</button></div>`;
@@ -175,16 +214,20 @@ function viewToday() {
   if (!S.habits.length) return emptyState();
   const t = today();
   const title = day === t ? 'היום' : day === addDays(t, -1) ? 'אתמול' : `יום ${DAYS[dow(day)]}`;
+  const off = isOff(day);
   let html = `<div class="top"><div class="date">${longDate(day)}</div><h1>${title}</h1>
-    ${day !== t ? `<button class="back" data-act="day" data-d="${t}">חזרה להיום</button>` : ''}</div>`;
+    <div class="acts">${day !== t ? `<button class="back" data-act="day" data-d="${t}">חזרה להיום</button>` : ''}
+    ${F('skip') && !off ? `<button class="back muted" data-act="offsheet">דילוג על כל היום</button>` : ''}</div></div>`;
   html += weekStrip();
+  if (off) html += `<div class="offbar"><span>🏖 יום חופש. ההרגלים לא נספרים והרצף נשמר.</span><button class="btn sm soft" data-act="unoff">ביטול</button></div>`;
   const list = S.habits.filter(h => activeOn(h, day));
   if (!list.length) return html + `<div class="empty"><p>אין הרגלים פעילים ליום הזה.</p></div>`;
   const open = list.filter(h => !metForWeek(h, day)), met = list.filter(h => metForWeek(h, day));
   const counted = open.filter(h => !isSkip(h, day)), done = counted.filter(h => isDone(h, day)).length;
-  html += `<div class="summary"><span>${done} מתוך ${counted.length}</span><span class="bar"><i style="width:${counted.length ? 100 * done / counted.length : 0}%"></i></span></div>`;
+  if (!off) html += `<div class="summary"><span>${done} מתוך ${counted.length}</span><span class="bar"><i style="width:${counted.length ? 100 * done / counted.length : 0}%"></i></span></div>`;
   for (const tm of TIME_ORDER) {
     const g = open.filter(h => h.time === tm); if (!g.length) continue;
+    if (F('sink')) g.sort((a, b) => (isDone(a, day) || isSkip(a, day)) - (isDone(b, day) || isSkip(b, day)));
     html += `<h2>${TIMES[tm]}</h2>` + g.map(habitCard).join('');
   }
   if (met.length) html += `<h2>הושלמו לשבוע</h2>` + met.map(habitCard).join('');
@@ -203,13 +246,13 @@ function dotGrid(h) {
 
 function viewProgress() {
   if (!S.habits.length) return emptyState();
-  let html = `<div class="top"><div class="date">16 השבועות האחרונים</div><h1>התקדמות</h1></div>`;
+  let html = `<div class="top"><h1>התקדמות</h1></div>` + monthCard();
   const act = S.habits.filter(h => h.status === 'active');
-  if (act.length) html += `<h2>פעילים</h2>`;
+  if (act.length) html += `<h2>לפי הרגל · לחיצה לפרטים</h2>`;
   for (const h of act) {
     const c = consistency(h);
     const ready = c.pct >= 85 && c.days >= 21;
-    html += `<div class="pcard" data-act="edit" data-id="${h.id}" style="--c:${COLORS[h.color]}">
+    html += `<div class="pcard" data-act="stats" data-id="${h.id}" style="--c:${COLORS[h.color]}">
       <div class="head"><div class="emo">${esc(h.emoji)}</div><div class="t"><div class="n">${esc(h.name)}</div>
       <div class="meta">${[freqText(h.freq), TIMES[h.time], F('streaks') && streak(h)].filter(Boolean).join(' · ')}</div></div><div class="pct">${c.pct}%</div></div>
       ${dotGrid(h)}
@@ -228,6 +271,93 @@ function miniRow(h, extra) {
     <div class="t" data-act="edit" data-id="${h.id}"><div class="n">${esc(h.name)}</div></div>${extra}</div>`;
 }
 
+const calHead = () => LETTERS.map(l => `<span class="h">${l}</span>`).join('');
+const monthNav = (act, ym) => `<div class="mh"><button class="nav" data-act="${act}" data-n="-1" aria-label="חודש קודם">›</button>
+  <b>${monthName(ym)}</b><button class="nav" data-act="${act}" data-n="1" aria-label="חודש הבא" ${ym >= today().slice(0, 7) ? 'disabled' : ''}>‹</button></div>`;
+
+function monthCard() {
+  const t = today();
+  let g = calHead(), done = 0, total = 0, perfect = 0;
+  for (const d of monthCells(month)) {
+    if (d.slice(0, 7) !== month) { g += '<span></span>'; continue; }
+    const fu = d > t, off = isOff(d), s = fu || off ? { n: 0, c: 0 } : dayStats(d);
+    done += s.c; total += s.n; if (s.n && s.c === s.n) perfect++;
+    g += `<button class="cd ${d === t ? 'today' : ''} ${off ? 'off' : ''}" data-act="goday" data-d="${d}" ${fu ? 'disabled' : ''}>
+      <span class="r" style="--p:${s.n ? Math.round(100 * s.c / s.n) : 0}"><span>${+d.slice(8)}</span></span></button>`;
+  }
+  return `<div class="panel">${monthNav('mo', month)}<div class="cal" data-swipe="mo">${g}</div></div>
+    <div class="stats">
+      <div class="stat"><b>${total ? Math.round(100 * done / total) : 0}%</b><span>ביצוע בחודש</span></div>
+      <div class="stat"><b>${perfect}</b><span>ימים מושלמים בחודש</span></div>
+      <div class="stat"><b>${done}</b><span>סימונים בחודש</span></div>
+      <div class="stat"><b>${perfectStreak()}</b><span>ימים מושלמים ברצף, עכשיו</span></div></div>`;
+}
+
+function openStats(id) { statsId = id; hMonth = today().slice(0, 7); renderStats(true); }
+function renderStats(first) {
+  const h = byId(statsId); if (!h) return closeSheet();
+  if (first) return openSheet(statsHtml(h));
+  const top = sheet.scrollTop; sheet.innerHTML = `<div class="grab"></div>` + statsHtml(h); sheet.scrollTop = top;
+}
+function statsHtml(h) {
+  const t = today(), c = consistency(h), st = habitStats(h), cur = streakCount(h), unit = h.freq.type === 'weekly' ? 'שבועות' : 'ימים';
+  let g = calHead();
+  for (const d of monthCells(hMonth)) {
+    if (d.slice(0, 7) !== hMonth) { g += '<span></span>'; continue; }
+    const cls = d > t ? 'fu' : isDone(h, d) ? 'on' : isSkip(h, d) ? 'sk' : amount(h, d) ? 'pa' : '';
+    g += `<button class="hc ${cls} ${d === t ? 'today' : ''}" data-act="hday" data-d="${d}" ${d > t ? 'disabled' : ''}>${+d.slice(8)}</button>`;
+  }
+  const wd = LETTERS.map(() => [0, 0]);
+  for (let i = 0; i < 84; i++) {
+    const d = addDays(t, -i); if (d < h.created) break;
+    if (isSkip(h, d)) continue; wd[dow(d)][1]++; if (isDone(h, d)) wd[dow(d)][0]++;
+  }
+  const bars = wd.map(([a, n], i) => { const p = n ? Math.round(100 * a / n) : 0;
+    return `<div><div class="b"><small>${n ? p + '%' : ''}</small><i style="height:${Math.max(3, p)}%"></i></div><span>${LETTERS[i]}</span></div>`; }).join('');
+  return `<div style="--c:${COLORS[h.color]}">
+    <div class="sh"><div class="emo">${esc(h.emoji)}</div><div><h3>${esc(h.name)}</h3><div class="meta">${freqText(h.freq)} · ${TIMES[h.time]}</div></div></div>
+    <div class="stats" style="margin-top:16px">
+      <div class="stat"><b>${c.pct}%</b><span>ביצוע ב-4 השבועות האחרונים</span></div>
+      <div class="stat"><b>${cur}</b><span>רצף נוכחי (${unit})</span></div>
+      <div class="stat"><b>${st.best}</b><span>שיא רצף (${unit})</span></div>
+      <div class="stat"><b>${st.total}</b><span>פעמים בסך הכול</span></div></div>
+    <div class="panel">${monthNav('hmo', hMonth)}<div class="cal" data-swipe="hmo">${g}</div>
+      <p class="note" style="text-align:center">לחיצה על יום מסמנת או מבטלת אותו</p></div>
+    <h2>לפי ימים בשבוע (12 שבועות אחרונים)</h2><div class="panel" style="margin-top:0"><div class="wd">${bars}</div></div>
+    <div class="btns"><button class="btn soft" data-act="edit" data-id="${h.id}">עריכת ההרגל</button><button class="btn" data-act="close">סגירה</button></div></div>`;
+}
+
+function openOff() {
+  openSheet(`<h3>דילוג על יום שלם</h3><p class="sub">מחלה, חופשה או יום עמוס. ההרגלים בימים האלה לא נספרים, והאחוזים והרצפים לא נפגעים.</p>
+    <button class="btn full" data-act="offgo" data-from="${day}" data-to="${day}">דילוג על ${dayLabel(day)}</button>
+    <label>או כמה ימים ברצף (חופשה)</label>
+    <div class="namerow"><input type="date" id="offfrom" value="${day}"><input type="date" id="offto" value="${addDays(day, 6)}"></div>
+    <div class="btns"><button class="btn soft" data-act="offrange">דילוג על כל הטווח</button></div>`);
+}
+function setOff(from, to) {
+  if (!from || !to || to < from) return toast('טווח לא תקין');
+  if (between(from, to) > 90) return toast('אפשר עד 90 יום');
+  S.off = S.off || {};
+  for (let d = from; d <= to; d = addDays(d, 1)) S.off[d] = 1;
+  save(); closeSheet(); render(); toast(from === to ? 'סומן כיום חופש 🏖' : `${between(from, to) + 1} ימי חופש סומנו 🏖`);
+}
+function toggleSkip(id) {
+  const h = byId(id);
+  if (h.log[day] === 's') delete h.log[day]; else h.log[day] = 's';
+  save(); render(); toast(h.log[day] === 's' ? `דילגת על "${h.name}"` : 'הדילוג בוטל');
+}
+function shiftWeek(n) {
+  anchor = addDays(anchor, n); if (anchor > today()) anchor = today();
+  if (day > anchor || day < addDays(anchor, -6)) day = anchor;
+  render();
+}
+function celebrate() {
+  const box = document.createElement('div'); box.className = 'confetti';
+  box.innerHTML = Array.from({ length: 40 }, (_, i) => `<i style="--x:${(Math.random() * 100).toFixed(1)}vw;--d:${(0.9 + Math.random() * 0.7).toFixed(2)}s;--r:${Math.round(Math.random() * 720 - 360)}deg;background:${COLORS[i % COLORS.length]};animation-delay:${(Math.random() * 0.25).toFixed(2)}s"></i>`).join('');
+  document.body.appendChild(box); setTimeout(() => box.remove(), 2200);
+  toast('כל ההרגלים של היום הושלמו 🎉');
+}
+
 function viewSettings() {
   const hasKey = !!localStorage.getItem(AIKEY);
   return `<div class="top"><h1>עוד</h1></div>
@@ -240,7 +370,9 @@ function viewSettings() {
   <p class="note">קוד הגישה מחבר את המכשיר לשרת הפרטי שלך: ההרגלים נשמרים בענן ומסתנכרנים בין מכשירים, והייבוא החכם עובד דרך Claude. בלי קוד, הכל נשמר רק במכשיר.</p>
   ${F('reminders') ? remindersSection() : ''}
   <h2>הרגלים</h2><div class="group">
-    <button data-act="order"><div>סידור ההרגלים</div><div class="s">שינוי הסדר שבו ההרגלים מופיעים</div></button></div>
+    <button data-act="order"><div>סידור ההרגלים</div><div class="s">שינוי הסדר שבו ההרגלים מופיעים</div></button>
+    <div><div>היום מתחלף בשעה</div><div class="s">סימון אחרי חצות ועד השעה הזו נספר ליום הקודם</div>
+      <div class="chips" style="margin-top:10px">${[0, 1, 2, 3, 4].map(v => `<button class="chip ${dayStart() === v ? 'on' : ''}" data-act="daystart" data-v="${v}">0${v}:00</button>`).join('')}</div></div></div>
   <h2>תכונות</h2><div class="group">
     ${Object.entries(FEATURES).map(([k, [t, s]]) => `<label class="sw-row"><span><div>${t}</div><div class="s">${s}</div></span>
       <input type="checkbox" class="switch" data-feat="${k}" ${F(k) ? 'checked' : ''}></label>`).join('')}</div>
@@ -502,6 +634,7 @@ function asText() {
 
 // ---------- events ----------
 document.addEventListener('click', async e => {
+  if (Date.now() - noClick < 400) return;
   const go = e.target.closest('[data-go]');
   if (go) { view = go.dataset.go; if (view === 'today') day = anchor = today(); render(); window.scrollTo(0, 0); return; }
   const el = e.target.closest('[data-act]');
@@ -511,25 +644,41 @@ document.addEventListener('click', async e => {
     case 'quick': openQuick(); break;
     case 'close': closeSheet(); break;
     case 'day': day = el.dataset.d; if (day === today()) anchor = day; render(); break;
-    case 'wk': {
-      anchor = addDays(anchor, +el.dataset.n); if (anchor > today()) anchor = today();
-      day = day > anchor || day < addDays(anchor, -6) ? anchor : day; render(); break;
+    case 'wk': shiftWeek(+el.dataset.n); break;
+    case 'mo': month = addMonths(month, +el.dataset.n); render(); break;
+    case 'hmo': hMonth = addMonths(hMonth, +el.dataset.n); renderStats(); break;
+    case 'goday': {
+      const t = today(); day = el.dataset.d; anchor = addDays(day, 3) > t ? t : addDays(day, 3);
+      view = 'today'; render(); window.scrollTo(0, 0); break;
+    }
+    case 'stats': openStats(id); break;
+    case 'hday': {
+      const h = byId(statsId), d = el.dataset.d;
+      if (isDone(h, d)) delete h.log[d]; else h.log[d] = tgt(h) > 1 ? tgt(h) : true;
+      save(); render(); renderStats(); break;
+    }
+    case 'offsheet': openOff(); break;
+    case 'offgo': setOff(el.dataset.from, el.dataset.to); break;
+    case 'offrange': setOff($('#offfrom').value, $('#offto').value); break;
+    case 'unoff': delete S.off[day]; save(); render(); toast('יום החופש בוטל'); break;
+    case 'daystart': {
+      S.settings = S.settings || {}; S.settings.dayStart = +el.dataset.v;
+      save(); day = anchor = today(); render(); toast('נשמר'); break;
     }
     case 'tick': {
-      const h = byId(id), T = tgt(h);
+      const h = byId(id), T = tgt(h), s0 = dayStats(day);
       if (T > 1) {
         const next = isDone(h, day) ? 0 : amount(h, day) + 1;
         if (next) h.log[day] = next; else delete h.log[day];
         if (next >= T) popId = id;
       } else if (isDone(h, day)) delete h.log[day];
       else { h.log[day] = true; popId = id; }
-      save(); render(); break;
+      save(); render();
+      const s1 = dayStats(day);
+      if (F('celebrate') && s1.n && s1.c === s1.n && s0.c < s0.n) celebrate();
+      break;
     }
-    case 'skip': {
-      const h = byId(draft.id);
-      if (h.log[day] === 's') delete h.log[day]; else h.log[day] = 's';
-      save(); closeSheet(); render(); toast(h.log[day] === 's' ? 'דילגת, הרצף והאחוזים לא נפגעים' : 'הדילוג בוטל'); break;
-    }
+    case 'skip': { const sid = draft.id; closeSheet(); toggleSkip(sid); break; }
     case 'clearremind': $('#fremind').value = ''; el.remove(); break;
     case 'order': openOrder(); break;
     case 'mv': move(id, +el.dataset.n); break;
@@ -597,7 +746,7 @@ document.addEventListener('keydown', e => {
 // Swipe the sheet down to close it, like native iOS sheets.
 (() => {
   let y0 = null, dy = 0;
-  sheet.addEventListener('touchstart', e => { if (sheet.scrollTop <= 0 && !e.target.closest('input,textarea')) { y0 = e.touches[0].clientY; dy = 0; } }, { passive: true });
+  sheet.addEventListener('touchstart', e => { if (sheet.scrollTop <= 0 && !e.target.closest('input,textarea,[data-swipe]')) { y0 = e.touches[0].clientY; dy = 0; } }, { passive: true });
   sheet.addEventListener('touchmove', e => {
     if (y0 == null) return;
     dy = Math.max(0, e.touches[0].clientY - y0);
@@ -610,6 +759,50 @@ document.addEventListener('keydown', e => {
     y0 = null;
   });
 })();
+
+// Horizontal swipes: weeks and months (RTL, so dragging right moves forward in time), and a habit card to skip it.
+(() => {
+  let s = null;
+  document.addEventListener('touchstart', e => {
+    const el = e.target.closest('[data-swipe]');
+    s = el && e.touches.length === 1 ? { el, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, lock: null } : null;
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!s) return;
+    if (e.touches.length > 1) { s.el.style.transform = ''; s = null; return; }
+    const dx = e.touches[0].clientX - s.x, dy = e.touches[0].clientY - s.y;
+    if (!s.lock && Math.hypot(dx, dy) > 8) s.lock = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    if (s.lock !== 'x') return;
+    e.preventDefault(); s.dx = dx;
+    const card = s.el.dataset.swipe === 'card';
+    s.el.style.transition = 'none';
+    s.el.style.transform = `translateX(${card ? Math.max(-110, Math.min(110, dx)) : Math.max(-40, Math.min(40, dx / 2))}px)`;
+  }, { passive: false });
+  const end = () => {
+    if (!s) return;
+    const { el, dx, lock } = s; s = null;
+    el.style.transition = ''; el.style.transform = '';
+    if (lock !== 'x') return;
+    noClick = Date.now();
+    if (Math.abs(dx) >= 50) onSwipe(el, dx > 0 ? 1 : -1, Math.abs(dx));
+  };
+  document.addEventListener('touchend', end);
+  document.addEventListener('touchcancel', end);
+})();
+function onSwipe(el, dir, dist) {
+  const k = el.dataset.swipe, t = today();
+  if (k === 'card') { if (dist >= 80) toggleSkip(el.dataset.id); return; }
+  if (k === 'wk') { if (dir > 0 && anchor >= t) return; shiftWeek(dir * 7); }
+  else if (k === 'mo') { if (dir > 0 && month >= t.slice(0, 7)) return; month = addMonths(month, dir); render(); }
+  else if (k === 'hmo') { if (dir > 0 && hMonth >= t.slice(0, 7)) return; hMonth = addMonths(hMonth, dir); renderStats(); }
+  document.querySelector(`[data-swipe="${k}"]`)?.animate(
+    [{ transform: `translateX(${-dir * 40}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }],
+    { duration: 240, easing: 'cubic-bezier(.23,1,.32,1)' });
+}
+
+// No pinch or double-tap zoom, like a native app.
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
