@@ -11,7 +11,8 @@ const CHECK = '<svg viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
 
 let S = load();
 let view = 'today', day = today(), anchor = day, draft = null, imp = null, popId = null;
-let month = day.slice(0, 7), hMonth = month, statsId = null, noClick = 0;
+let month = day.slice(0, 7), hMonth = month, statsId = null, noClick = 0, dragging = null;
+let filt = { st: 'all', tm: 'all' }, filtOpen = false;
 
 const $ = s => document.querySelector(s);
 const main = $('#main'), veil = $('#veil'), sheet = $('#sheet');
@@ -173,6 +174,7 @@ function toast(msg) {
 function render() {
   document.querySelectorAll('.tabbar [data-go]').forEach(b => b.classList.toggle('on', b.dataset.go === view));
   main.innerHTML = view === 'today' ? viewToday() : view === 'progress' ? viewProgress() : viewSettings();
+  const yr = main.querySelector('.year'); if (yr) yr.scrollLeft = -yr.scrollWidth;
   if (popId) { main.querySelector(`.card[data-id="${popId}"]`)?.classList.add('pop'); popId = null; }
 }
 
@@ -217,21 +219,37 @@ function viewToday() {
   const off = isOff(day);
   let html = `<div class="top"><div class="date">${longDate(day)}</div><h1>${title}</h1>
     <div class="acts">${day !== t ? `<button class="back" data-act="day" data-d="${t}">חזרה להיום</button>` : ''}
-    ${F('skip') && !off ? `<button class="back muted" data-act="offsheet">דילוג על כל היום</button>` : ''}</div></div>`;
+    ${F('skip') && !off ? `<button class="back muted" data-act="offsheet">דילוג על כל היום</button>` : ''}
+    ${filtShown() ? '' : `<button class="back muted" data-act="filtopen">סינון</button>`}</div></div>`;
   html += weekStrip();
+  if (filtShown()) html += filterBar();
   if (off) html += `<div class="offbar"><span>🏖 יום חופש. ההרגלים לא נספרים והרצף נשמר.</span><button class="btn sm soft" data-act="unoff">ביטול</button></div>`;
   const list = S.habits.filter(h => activeOn(h, day));
   if (!list.length) return html + `<div class="empty"><p>אין הרגלים פעילים ליום הזה.</p></div>`;
   const open = list.filter(h => !metForWeek(h, day)), met = list.filter(h => metForWeek(h, day));
   const counted = open.filter(h => !isSkip(h, day)), done = counted.filter(h => isDone(h, day)).length;
   if (!off) html += `<div class="summary"><span>${done} מתוך ${counted.length}</span><span class="bar"><i style="width:${counted.length ? 100 * done / counted.length : 0}%"></i></span></div>`;
+  const closed = h => isDone(h, day) || isSkip(h, day);
+  const pass = h => (filt.st === 'all' || (filt.st === 'done') === closed(h)) && (filt.tm === 'all' || h.time === filt.tm);
+  let shown = 0;
   for (const tm of TIME_ORDER) {
-    const g = open.filter(h => h.time === tm); if (!g.length) continue;
-    if (F('sink')) g.sort((a, b) => (isDone(a, day) || isSkip(a, day)) - (isDone(b, day) || isSkip(b, day)));
-    html += `<h2>${TIMES[tm]}</h2>` + g.map(habitCard).join('');
+    const g = open.filter(h => h.time === tm && pass(h)); if (!g.length) continue;
+    if (F('sink')) g.sort((a, b) => closed(a) - closed(b));
+    html += `<h2>${TIMES[tm]}</h2>` + g.map(habitCard).join(''); shown += g.length;
   }
-  if (met.length) html += `<h2>הושלמו לשבוע</h2>` + met.map(habitCard).join('');
+  const mf = met.filter(pass);
+  if (mf.length) html += `<h2>הושלמו לשבוע</h2>` + mf.map(habitCard).join('');
+  if (!shown && !mf.length) html += `<div class="empty"><p>${filt.st === 'open' ? 'הכל בוצע 🎉' : 'אין הרגלים בסינון הזה.'}</p></div>`;
   return html;
+}
+
+const filtShown = () => filtOpen || filt.st !== 'all' || filt.tm !== 'all';
+function filterBar() {
+  const chip = (k, v, l) => `<button class="chip ${filt[k] === v ? 'on' : ''}" data-act="filt" data-k="${k}" data-v="${v}">${l}</button>`;
+  const times = TIME_ORDER.filter(t => S.habits.some(h => activeOn(h, day) && h.time === t));
+  return `<div class="filt">${chip('st', 'all', 'הכל')}${chip('st', 'open', 'נשאר לעשות')}${chip('st', 'done', 'בוצע')}
+    ${times.length > 1 ? `<span class="sep"></span>${chip('tm', 'all', 'כל השעות')}${times.map(t => chip('tm', t, TIMES[t])).join('')}` : ''}
+    <span class="sep"></span><button class="chip" data-act="filtx" aria-label="סגירת הסינון">✕</button></div>`;
 }
 
 function dotGrid(h) {
@@ -246,7 +264,7 @@ function dotGrid(h) {
 
 function viewProgress() {
   if (!S.habits.length) return emptyState();
-  let html = `<div class="top"><h1>התקדמות</h1></div>` + monthCard();
+  let html = `<div class="top"><h1>התקדמות</h1></div>` + monthCard() + yearCard();
   const act = S.habits.filter(h => h.status === 'active');
   if (act.length) html += `<h2>לפי הרגל · לחיצה לפרטים</h2>`;
   for (const h of act) {
@@ -291,6 +309,19 @@ function monthCard() {
       <div class="stat"><b>${perfect}</b><span>ימים מושלמים בחודש</span></div>
       <div class="stat"><b>${done}</b><span>סימונים בחודש</span></div>
       <div class="stat"><b>${perfectStreak()}</b><span>ימים מושלמים ברצף, עכשיו</span></div></div>`;
+}
+
+function yearCard() {
+  const t = today(), end = addDays(weekStart(t), 6);
+  let cells = '';
+  for (let d = addDays(weekStart(t), -7 * 52); d <= end; d = addDays(d, 1)) {
+    if (d > t) { cells += '<i class="fu"></i>'; continue; }
+    if (isOff(d)) { cells += '<i class="off"></i>'; continue; }
+    const s = dayStats(d);
+    cells += s.n ? `<i style="--p:${Math.round(100 * s.c / s.n)}%" title="${fmt(d)}"></i>` : '<i></i>';
+  }
+  return `<h2>השנה האחרונה</h2><div class="panel" style="margin-top:0"><div class="year">${cells}</div>
+    <div class="legend"><span>פחות</span><i style="--p:0%"></i><i style="--p:35%"></i><i style="--p:70%"></i><i style="--p:100%"></i><span>יותר</span></div></div>`;
 }
 
 function openStats(id) { statsId = id; hMonth = today().slice(0, 7); renderStats(true); }
@@ -471,7 +502,7 @@ const dayLabel = d => d === today() ? 'היום' : d === addDays(today(), -1) ? 
 
 function openOrder() {
   const list = S.habits.filter(h => h.status !== 'later');
-  openSheet(`<h3>סידור ההרגלים</h3><p class="sub">החיצים מזיזים הרגל למעלה או למטה.</p>
+  openSheet(`<h3>סידור ההרגלים</h3><p class="sub">החיצים מזיזים הרגל למעלה או למטה. אפשר גם ללחוץ לחיצה ארוכה על הרגל במסך היום ולגרור אותו.</p>
     ${list.map((h, i) => `<div class="ii" style="--c:${COLORS[h.color]}"><div class="emo">${esc(h.emoji)}</div><div class="t"><div class="n">${esc(h.name)}</div></div>
       <button class="btn sm soft" data-act="mv" data-id="${h.id}" data-n="-1" ${i ? '' : 'disabled'} aria-label="למעלה">↑</button>
       <button class="btn sm soft" data-act="mv" data-id="${h.id}" data-n="1" ${i < list.length - 1 ? '' : 'disabled'} aria-label="למטה">↓</button></div>`).join('')}
@@ -657,6 +688,9 @@ document.addEventListener('click', async e => {
       if (isDone(h, d)) delete h.log[d]; else h.log[d] = tgt(h) > 1 ? tgt(h) : true;
       save(); render(); renderStats(); break;
     }
+    case 'filtopen': filtOpen = true; render(); break;
+    case 'filtx': filtOpen = false; filt = { st: 'all', tm: 'all' }; render(); break;
+    case 'filt': filt[el.dataset.k] = el.dataset.v; render(); break;
     case 'offsheet': openOff(); break;
     case 'offgo': setOff(el.dataset.from, el.dataset.to); break;
     case 'offrange': setOff($('#offfrom').value, $('#offto').value); break;
@@ -768,7 +802,7 @@ document.addEventListener('keydown', e => {
     s = el && e.touches.length === 1 ? { el, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, lock: null } : null;
   }, { passive: true });
   document.addEventListener('touchmove', e => {
-    if (!s) return;
+    if (!s || dragging) return;
     if (e.touches.length > 1) { s.el.style.transform = ''; s = null; return; }
     const dx = e.touches[0].clientX - s.x, dy = e.touches[0].clientY - s.y;
     if (!s.lock && Math.hypot(dx, dy) > 8) s.lock = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
@@ -798,6 +832,65 @@ function onSwipe(el, dir, dist) {
   document.querySelector(`[data-swipe="${k}"]`)?.animate(
     [{ transform: `translateX(${-dir * 40}px)`, opacity: 0 }, { transform: 'none', opacity: 1 }],
     { duration: 240, easing: 'cubic-bezier(.23,1,.32,1)' });
+}
+
+// Pull down at the top of "today" to open the filter.
+(() => {
+  let y0 = null;
+  document.addEventListener('touchstart', e => {
+    y0 = view === 'today' && !filtShown() && window.scrollY <= 0 && e.touches.length === 1 && !e.target.closest('.veil,.tabbar') ? e.touches[0].clientY : null;
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (y0 == null || dragging || e.touches[0].clientY - y0 < 80) return;
+    y0 = null; filtOpen = true; render();
+  }, { passive: true });
+})();
+
+// Long-press a habit, then drag it up or down to reorder within its group.
+(() => {
+  let lp = null;
+  document.addEventListener('touchstart', e => {
+    const card = view === 'today' && e.touches.length === 1 && e.target.closest('.card');
+    if (!card) return;
+    const x = e.touches[0].clientX, y = e.touches[0].clientY;
+    lp = { x, y, timer: setTimeout(() => { lp = null; startDrag(card, y); }, 450) };
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (dragging) { e.preventDefault(); moveDrag(e.touches[0].clientY); return; }
+    if (lp && Math.hypot(e.touches[0].clientX - lp.x, e.touches[0].clientY - lp.y) > 8) { clearTimeout(lp.timer); lp = null; }
+  }, { passive: false });
+  const end = () => { if (lp) { clearTimeout(lp.timer); lp = null; } if (dragging) endDrag(); };
+  document.addEventListener('touchend', end);
+  document.addEventListener('touchcancel', end);
+})();
+function startDrag(card, y) {
+  const list = [card];
+  for (let p = card.previousElementSibling; p?.classList.contains('card'); p = p.previousElementSibling) list.unshift(p);
+  for (let n = card.nextElementSibling; n?.classList.contains('card'); n = n.nextElementSibling) list.push(n);
+  if (list.length < 2) return;
+  const from = list.indexOf(card);
+  dragging = { card, y0: y, list, from, to: from, step: card.offsetHeight + 8 };
+  card.classList.add('lift'); navigator.vibrate?.(15); noClick = Date.now() + 1e6;
+}
+function moveDrag(y) {
+  const g = dragging, dy = y - g.y0;
+  g.card.style.transform = `translateY(${dy}px) scale(1.03)`;
+  g.to = Math.max(0, Math.min(g.list.length - 1, g.from + Math.round(dy / g.step)));
+  g.list.forEach((c, i) => {
+    if (c === g.card) return;
+    const sh = g.from < g.to && i > g.from && i <= g.to ? -g.step : g.from > g.to && i < g.from && i >= g.to ? g.step : 0;
+    c.style.transform = sh ? `translateY(${sh}px)` : '';
+  });
+}
+function endDrag() {
+  const g = dragging; dragging = null; noClick = Date.now();
+  if (g.to !== g.from) {
+    const a = byId(g.card.dataset.id), b = byId(g.list[g.to].dataset.id);
+    S.habits.splice(S.habits.indexOf(a), 1);
+    S.habits.splice(S.habits.indexOf(b) + (g.to > g.from ? 1 : 0), 0, a);
+    save(); toast('הסדר עודכן');
+  }
+  render();
 }
 
 // No pinch or double-tap zoom, like a native app.
